@@ -74,6 +74,12 @@ def scrape_candidates(delay=0.5):
     return out
 
 
+def load_first_preference_shares():
+    """Saved district shares, indexed by UPPER CASE district to match the 2022 boundaries."""
+    shares = pd.read_csv(DATA_DIR / "vec_2022_first_preference_shares.csv")
+    return shares.assign(district=shares["district"].str.upper()).set_index("district")
+
+
 def first_preference_shares(candidates):
     """Share of formal first-preference votes by party group, one row per district."""
     votes = candidates.pivot_table(

@@ -106,3 +106,13 @@ tenure_mapping = {
     "O_MTG_Total": "Mortgage Holder",
     "R_Tot_Total": "Renter",
 }
+
+# Average persons per occupied private dwelling by tenure, used to turn G37
+# dwelling counts into approximate person counts (G37-G43 have no person-level
+# tenure). Approximate ABS Housing Occupancy and Costs figures.
+# TODO: confirm against the latest ABS release for Victoria.
+persons_per_dwelling_by_tenure = {
+    "Own Home Outright": 2.4,
+    "Mortgage Holder": 3.0,
+    "Renter": 2.4,
+}

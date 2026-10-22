@@ -14,6 +14,7 @@ from utils.mappings import (
     education_mapping,
     income_brackets,
     language_mapping,
+    persons_per_dwelling_by_tenure,
     sex_mapping,
     tenure_mapping,
 )
@@ -54,6 +55,18 @@ def _aggregate(df, mapping):
 def get_census_adult_population():
     """Persons aged 18+ per SED (G04)."""
     return get_census_age_data().sum(axis=1).rename("Adult Population")
+
+
+def get_census_adult_citizen_population():
+    """Approximate Australian citizens aged 18+ per SED (G04 + G01).
+
+    G01's citizen count covers all ages, so this is adults x (citizens / persons).
+    It overstates adult citizenship, since children are mostly citizens; the
+    overstatement is largest in seats with many adult migrants.
+    """
+    g01 = _read_census_table("G01")
+    citizen_rate = g01["Australian_citizen_P"] / g01["Tot_P_P"]
+    return (get_census_adult_population() * citizen_rate).rename("Adult Citizen Population")
 
 
 def get_census_sex_data():
@@ -98,11 +111,15 @@ def get_census_income_data():
 
 
 def get_census_tenure_data():
-    """Own Home Outright / Mortgage Holder / Renter, occupied private DWELLINGS (G37).
+    """Own Home Outright / Mortgage Holder / Renter, approximate PERSONS (G37).
 
-    Not on a persons-18+ basis; apply ``rescale_to_population``.
+    G37 counts occupied private dwellings; these are weighted by average persons
+    per dwelling for each tenure (``persons_per_dwelling_by_tenure``) so tenures
+    with larger households are not under-counted. Not on a persons-18+ basis;
+    apply ``rescale_to_population``.
     """
-    return _aggregate(_read_census_table("G37"), tenure_mapping)
+    dwellings = _aggregate(_read_census_table("G37"), tenure_mapping)
+    return dwellings.mul(pd.Series(persons_per_dwelling_by_tenure), axis=1)
 
 
 def get_census_language_data():
@@ -114,9 +131,11 @@ def get_census_language_data():
 
 
 def rescale_to_population(df, population=None):
-    """Scale each SED row of ``df`` proportionally so it sums to ``population``.
+    """Scale each row of ``df`` proportionally so it sums to ``population``.
 
-    Defaults to the 18+ population from ``get_census_adult_population``.
+    ``population`` must share ``df``'s index (e.g. a per-district base from
+    ``utils.ipf.get_population_base``). Defaults to the per-SED 18+ population
+    from ``get_census_adult_population``.
     """
     if population is None:
         population = get_census_adult_population()
