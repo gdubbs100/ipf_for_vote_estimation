@@ -218,3 +218,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project data excluded from version control
+# Census: keep only the GCP tables read by utils/census.py
+data/census/*
+!data/census/2021 Census GCP State Electroral Division for VIC/
+data/census/2021 Census GCP State Electroral Division for VIC/*
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G01_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G04A_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G04B_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G17A_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G17B_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G17C_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G37_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G49A_VIC_SED.csv
+!data/census/2021 Census GCP State Electroral Division for VIC/2021Census_G49B_VIC_SED.csv
+data/spatial/*.zip
+
+runs/

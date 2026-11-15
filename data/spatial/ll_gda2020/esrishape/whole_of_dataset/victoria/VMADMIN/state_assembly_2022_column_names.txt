@@ -1,0 +1,12 @@
+﻿The column names in a Shape file are limited to 10 characters
+This lists the short column name and the original column name in the database table
+-----------------------------------------------------------------------------------------------------
+
+UFI = UFI
+UFI_CR = UFI_CREATED
+DIST_LABEL = DISTRICT_LABEL
+REGIONC = REGION_CODE
+REGION = REGION
+DISTRICTC = DISTRICT_CODE
+DISTRICT = DISTRICT
+REG_LABEL = REGION_LABEL
