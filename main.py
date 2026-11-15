@@ -27,6 +27,7 @@ from utils.ipf import (
     get_estimated_shares,
     get_population_base,
     get_seed_matrix,
+    get_swing,
     load_survey,
     margin_errors,
 )
@@ -39,13 +40,27 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--survey", required=True, choices=list(SURVEYS))
     parser.add_argument("--seed-matrix", default="all-ones", choices=SEED_MATRIX_METHODS)
-    parser.add_argument("--zero-method", default="epsilon", choices=ZERO_SHARE_METHODS,
-                        help="how 0.0 vote shares are handled in the 2022-results seed")
+    parser.add_argument("--seed-weight", type=float, default=0.5,
+                        help="weight on 2022 shares in the 2022-results seed; the rest is equal party shares")
+    parser.add_argument("--upper-house-weight", type=float, default=0.5,
+                        help="weight on upper house shares in the 2022-combined seed; the rest is lower house")
+    parser.add_argument("--apply-swing", action="store_true",
+                        help="shift 2022 seed shares by the survey's statewide swing since the 2022 election")
+    parser.add_argument("--swing-floor", type=float, default=0.01,
+                        help="minimum share after --apply-swing, before renormalising")
+    parser.add_argument("--zero-method", default="smoothing", choices=ZERO_SHARE_METHODS,
+                        help="how 0.0 vote shares are handled in the 2022 seeds")
     parser.add_argument("--epsilon", type=float, default=1e-6, help="floor for --zero-method epsilon")
+    parser.add_argument("--alpha", type=float, default=None,
+                        help="prior strength in pseudo-votes for --zero-method smoothing "
+                             "(default: mean district formal vote, ~50/50 mix with statewide shares)")
     parser.add_argument("--population-base", default="adult-citizen", choices=POPULATION_BASES)
     parser.add_argument("--convergence-rate", type=float, default=1e-10)
     parser.add_argument("--runs-dir", type=Path, default=Path("runs"))
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.apply_swing and args.seed_matrix == "all-ones":
+        parser.error("--apply-swing needs a 2022 seed matrix")
+    return args
 
 
 def setup_run_dir(args) -> Path:
@@ -91,7 +106,12 @@ def main(argv=None):
     ipf_mats = fit_demog_party_margins(demogs, pct, topline_p, args.convergence_rate)
 
     shape = (len(districts), *[len(d.get_columns()) for d in demogs], len(PARTY))
-    seed = get_seed_matrix(args.seed_matrix, shape, list(districts), args.zero_method, eps=args.epsilon)
+    swing = get_swing(topline) if args.apply_swing else None
+    if swing is not None:
+        logger.info("Swing applied to seed (pp): %s", (100 * swing).round(1).to_dict())
+    seed = get_seed_matrix(args.seed_matrix, shape, list(districts), args.zero_method,
+                           args.seed_weight, upper_house_weight=args.upper_house_weight,
+                           swing=swing, swing_floor=args.swing_floor, eps=args.epsilon, alpha=args.alpha)
     logger.info("Fitting full array %s with %s seed", shape, args.seed_matrix)
     X = fit_full(seed, demogs, ipf_mats, args.convergence_rate)
 

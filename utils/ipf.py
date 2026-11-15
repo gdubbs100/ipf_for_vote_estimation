@@ -23,6 +23,7 @@ from utils.census import (
 )
 from utils.spatial import map_2021_census_to_2022_districts
 from utils.vec_results import load_first_preference_shares
+from utils.vec_upper_house import load_upper_house_shares
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -39,8 +40,10 @@ SURVEYS = {
     "aug2026": (DATA_DIR / "demographic_primary_vote_aug2026.csv", "August 26"),
     "sep2026": (DATA_DIR / "demographic_primary_vote_sep2026.csv", "Sep 26"),
 }
-SEED_MATRIX_METHODS = ["all-ones", "2022-results"]
-ZERO_SHARE_METHODS = ["epsilon"]
+# Row label in topline_primary_vote.csv holding the 2022 state election result.
+ELECTION_POLL_LABEL = "Nov 23 Election"
+SEED_MATRIX_METHODS = ["all-ones", "2022-results", "2022-upper-house", "2022-combined"]
+ZERO_SHARE_METHODS = ["smoothing", "epsilon"]
 POPULATION_BASES = ["adult", "adult-citizen", "formal-votes-2022"]
 
 
@@ -146,41 +149,107 @@ def get_seed_matrix(
         method: str,
         shape: tuple[int, ...],
         districts: list[str] | None = None,
-        zero_method: str = "epsilon",
+        zero_method: str = "smoothing",
+        weight: float = 0.5,
+        upper_house_weight: float = 0.5,
+        swing: pd.Series | None = None,
+        swing_floor: float = 0.01,
         **zero_kwargs,
     ) -> np.ndarray:
-    """Initial array for the full IPF, axes [district, *demographics, party]."""
+    """Initial array for the full IPF, axes [district, *demographics, party].
+
+    The 2022 methods build district x party shares from ``get_2022_seed_shares``,
+    optionally shift them by ``swing`` (see ``apply_swing``), then blend with equal
+    party shares: ``weight`` * shares + (1 - ``weight``) * uniform. IPF preserves the
+    seed's ratios between districts, so the uniform part stops a poor guide to a party's
+    geography (e.g. One Nation, which stood in few lower house seats) dominating it.
+    """
     if method == "all-ones":
         return get_all_ones_seed_mat(shape)
-    elif method == "2022-results":
-        return get_2022_results_seed_mat(shape, districts, zero_method, **zero_kwargs)
-    raise ValueError(f"Unknown seed matrix {method!r}; choose from {SEED_MATRIX_METHODS}")
+    shares = get_2022_seed_shares(method, districts, zero_method, upper_house_weight, **zero_kwargs)
+    if swing is not None:
+        shares = apply_swing(shares, swing, swing_floor)
+    shares = weight * shares + (1 - weight) / len(PARTY)
+    district_party = shares.to_numpy().reshape(shape[0], *[1] * (len(shape) - 2), shape[-1])
+    return np.broadcast_to(district_party, shape).copy()
 
 
 def get_all_ones_seed_mat(shape: tuple[int, ...]) -> np.ndarray:
     return np.ones(shape)
 
 
-def get_2022_results_seed_mat(
-        shape: tuple[int, ...],
+def get_2022_seed_shares(
+        method: str,
         districts: list[str],
-        zero_method: str = "epsilon",
+        zero_method: str = "smoothing",
+        upper_house_weight: float = 0.5,
         **zero_kwargs,
-    ) -> np.ndarray:
-    """2022 first-preference shares per district x party, constant across demographics."""
-    shares = load_first_preference_shares().reindex(districts)[PARTY]
+    ) -> pd.DataFrame:
+    """2022 first-preference shares per district x party, rows summing to 1.
+
+    "2022-results" uses the lower house, "2022-upper-house" the upper house counted by
+    district, and "2022-combined" mixes them: (1 - ``upper_house_weight``) * lower +
+    ``upper_house_weight`` * upper. Mixing shares (rather than multiplying them into the
+    seed) avoids counting a district effect seen in both houses twice.
+    """
+    if method == "2022-results":
+        return get_2022_lower_house_shares(districts, zero_method, **zero_kwargs)
+    elif method == "2022-upper-house":
+        return get_2022_upper_house_shares(districts, zero_method, **zero_kwargs)
+    elif method == "2022-combined":
+        lower = get_2022_lower_house_shares(districts, zero_method, **zero_kwargs)
+        upper = get_2022_upper_house_shares(districts, zero_method, **zero_kwargs)
+        return (1 - upper_house_weight) * lower + upper_house_weight * upper
+    raise ValueError(f"Unknown seed matrix {method!r}; choose from {SEED_MATRIX_METHODS}")
+
+
+def get_2022_lower_house_shares(districts: list[str], zero_method: str = "smoothing", **zero_kwargs) -> pd.DataFrame:
+    return _district_shares(load_first_preference_shares(), districts, zero_method, **zero_kwargs)
+
+
+def get_2022_upper_house_shares(districts: list[str], zero_method: str = "smoothing", **zero_kwargs) -> pd.DataFrame:
+    return _district_shares(load_upper_house_shares(), districts, zero_method, **zero_kwargs)
+
+
+def _district_shares(results: pd.DataFrame, districts: list[str], zero_method: str, **zero_kwargs) -> pd.DataFrame:
+    results = results.reindex(districts)
+    shares = results[PARTY]
     if shares.isna().any().any():
         missing = shares.index[shares.isna().any(axis=1)].tolist()
         raise ValueError(f"No 2022 results for districts: {missing}")
-    shares = handle_zero_shares(shares, zero_method, **zero_kwargs)
-    district_party = shares.to_numpy().reshape(shape[0], *[1] * (len(shape) - 2), shape[-1])
-    return np.broadcast_to(district_party, shape).copy()
+    return handle_zero_shares(shares, results["formal_votes"], zero_method, **zero_kwargs)
 
 
-def handle_zero_shares(shares: pd.DataFrame, method: str, **kwargs) -> pd.DataFrame:
+def get_swing(topline: pd.Series) -> pd.Series:
+    """Survey topline minus the 2022 lower house result, per party, as proportions."""
+    election = pd.read_csv(DATA_DIR / "topline_primary_vote.csv").set_index("Poll").loc[ELECTION_POLL_LABEL, PARTY]
+    return (topline[PARTY] - election) / 100
+
+
+def apply_swing(shares: pd.DataFrame, swing: pd.Series, floor: float = 0.01) -> pd.DataFrame:
+    """Add the same swing to every district, floor at ``floor`` and renormalise rows to 1.
+
+    The swing is additive: a proportional swing would be a constant factor on a party's
+    column, which IPF undoes. Adding it changes ratios between districts, so a party's
+    2022 geography counts for less the more its vote has grown or shrunk. The floor
+    catches districts where a party's 2022 share was smaller than its statewide loss.
+    """
+    swung = (shares + swing[shares.columns]).clip(lower=floor)
+    return swung.div(swung.sum(axis=1), axis=0)
+
+
+def handle_zero_shares(
+        shares: pd.DataFrame,
+        formal_votes: pd.Series,
+        method: str,
+        eps: float = 1e-6,
+        alpha: float | None = None,
+    ) -> pd.DataFrame:
     """Remove 0.0 shares, which IPF can never scale up (e.g. parties that did not stand)."""
     if method == "epsilon":
-        return apply_epsilon_floor(shares, **kwargs)
+        return apply_epsilon_floor(shares, eps)
+    elif method == "smoothing":
+        return apply_additive_smoothing(shares, formal_votes, alpha)
     raise ValueError(f"Unknown zero-share method {method!r}; choose from {ZERO_SHARE_METHODS}")
 
 
@@ -188,6 +257,23 @@ def apply_epsilon_floor(shares: pd.DataFrame, eps: float = 1e-6) -> pd.DataFrame
     """Floor shares at ``eps`` and renormalise each row to sum to 1."""
     floored = shares.clip(lower=eps)
     return floored.div(floored.sum(axis=1), axis=0)
+
+
+def apply_additive_smoothing(
+        shares: pd.DataFrame,
+        formal_votes: pd.Series,
+        alpha: float | None = None,
+    ) -> pd.DataFrame:
+    """Shrink each district towards the statewide shares: (votes + alpha * prior) / (N + alpha).
+
+    ``alpha`` is the prior's weight in pseudo-votes; the 2022 result keeps weight
+    N / (N + alpha). Defaults to the mean district formal vote, i.e. roughly a 50/50 mix.
+    """
+    votes = shares.mul(formal_votes, axis=0)
+    prior = votes.sum() / votes.sum().sum()
+    if alpha is None:
+        alpha = formal_votes.mean()
+    return (votes + alpha * prior).div(formal_votes + alpha, axis=0)
 
 
 # --- fitting ---
